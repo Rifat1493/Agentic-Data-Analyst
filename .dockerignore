@@ -1,0 +1,30 @@
+# VCS / tooling
+.git
+.gitignore
+.github
+.claude
+.venv
+.ruff_cache
+.pytest_cache
+.mypy_cache
+
+# Python caches
+__pycache__/
+*.py[codz]
+*.egg-info/
+
+# Local secrets and runtime artifacts (never bake these into the image)
+.env
+.env.dev
+outputs/
+
+# Tests and coverage (built/tested in CI, not shipped in the image)
+tests/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Docs / misc
+*.md
+LICENSE
