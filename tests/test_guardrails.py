@@ -60,7 +60,7 @@ def test_dangerous_code_blocked():
 
 def test_tool_does_not_execute_rejected_code():
     print("\n=== The code interpreter refuses to exec rejected code ===")
-    from src.tools.code_executor import execute_python_code
+    from src.agents.code_generator.tools import execute_python_code
 
     # A clearly malicious payload; must be rejected, never executed.
     malicious = "import os\nos.system('echo SHOULD_NOT_RUN')"

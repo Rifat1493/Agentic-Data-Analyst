@@ -1,0 +1,72 @@
+name: agentic-data-analyst
+
+# ---------------------------------------------------------------------------
+# All four services build from the SAME source tree and share the same
+# Python environment. The only difference between them is the uvicorn entry
+# point (CMD). This mirrors the Bedrock / Foundry model: each agent is an
+# independently addressable unit, but they can also run together on one host.
+#
+# Ports (host:container):
+#   8000  orchestrator    — main API + Swagger UI
+#   8001  data-collector  — standalone agent endpoint
+#   8002  code-generator  — standalone agent endpoint
+#   8003  report-generator— standalone agent endpoint
+#
+# Usage:
+#   docker compose up --build          # start all services
+#   docker compose up orchestrator     # run only the orchestrator
+#   docker compose logs -f data-collector
+# ---------------------------------------------------------------------------
+
+x-build: &common-build
+  context: .
+  dockerfile: Dockerfile
+
+x-env: &common-env
+  env_file: .env.dev
+
+x-healthcheck: &common-healthcheck
+  test: >
+    python -c "import sys,urllib.request;
+    sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"
+  interval: 30s
+  timeout: 5s
+  start_period: 20s
+  retries: 3
+
+services:
+
+  orchestrator:
+    build: *common-build
+    <<: *common-env
+    ports:
+      - "8000:8000"
+    healthcheck: *common-healthcheck
+    # uses the default CMD from Dockerfile (orchestrator app:app)
+
+  data-collector:
+    build:
+      context: .
+      dockerfile: Dockerfile.data-collector
+    <<: *common-env
+    ports:
+      - "8001:8000"
+    healthcheck: *common-healthcheck
+
+  code-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile.code-generator
+    <<: *common-env
+    ports:
+      - "8002:8000"
+    healthcheck: *common-healthcheck
+
+  report-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile.report-generator
+    <<: *common-env
+    ports:
+      - "8003:8000"
+    healthcheck: *common-healthcheck

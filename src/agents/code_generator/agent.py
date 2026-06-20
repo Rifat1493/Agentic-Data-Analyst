@@ -1,6 +1,7 @@
 from langchain.agents import create_agent
+
 from src.agents.models import get_foundation_model
-from src.tools.code_executor import execute_python_code
+from .tools import execute_python_code
 
 
 SYSTEM_PROMPT = """You are a financial visualization agent. You receive OHLCV market \

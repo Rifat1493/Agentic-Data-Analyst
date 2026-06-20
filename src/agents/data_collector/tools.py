@@ -1,8 +1,9 @@
-
 import json
-import yfinance as yf
+
 import pandas as pd
+import yfinance as yf
 from langchain.tools import tool
+
 
 @tool("download_financial_data")
 def download_financial_data(
@@ -32,23 +33,24 @@ def download_financial_data(
         )
 
         if df.empty:
-            return f"No data returned for ticker '{ticker}' with period='{period}' and interval='{interval}'."
+            return (
+                f"No data returned for ticker '{ticker}' with "
+                f"period='{period}' and interval='{interval}'."
+            )
 
-        # yfinance returns MultiIndex columns like ('Close', 'MSFT'); flatten to strings.
+        # yfinance returns MultiIndex columns like ('Close', 'MSFT'); flatten.
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
         df = df.round(4)
         df.index = df.index.strftime("%Y-%m-%d %H:%M:%S")
-        return json.dumps(
-            {
-                "ticker": ticker,
-                "period": period,
-                "interval": interval,
-                "rows": len(df),
-                "columns": list(df.columns),
-                "data": df.to_dict(orient="index"),
-            }
-        )
+        return json.dumps({
+            "ticker": ticker,
+            "period": period,
+            "interval": interval,
+            "rows": len(df),
+            "columns": list(df.columns),
+            "data": df.to_dict(orient="index"),
+        })
     except Exception as exc:
         return f"Error downloading data for '{ticker}': {exc}"

@@ -1,6 +1,7 @@
 import os
 import traceback
 from datetime import datetime
+
 from langchain.tools import tool
 
 from src.middleware.guardrails import scan_generated_code
@@ -23,7 +24,6 @@ def execute_python_code(code: str) -> str:
     Returns:
         Path to the saved PNG chart, or an error message.
     """
-    # GUARDRAIL: statically vet the LLM-generated code before running it.
     verdict = scan_generated_code(code)
     if not verdict.allowed:
         return (

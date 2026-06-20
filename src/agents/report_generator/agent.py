@@ -1,6 +1,7 @@
 from langchain.agents import create_agent
+
 from src.agents.models import get_foundation_model
-from src.tools.report_writer import save_report
+from .tools import save_report
 
 
 SYSTEM_PROMPT = """You are a financial report generation agent. You receive market \
