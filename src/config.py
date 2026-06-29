@@ -40,7 +40,9 @@ REDIS_URL = os.getenv("REDIS_URL")
 DEFAULT_ROLES_CLAIM = "https://agentic-data-analyst/roles"
 
 AUTH0_DOMAIN = os.getenv("AUTH0_DOMAIN")
-AUTH0_API_AUDIENCE = os.getenv("AUTH0_API_AUDIENCE")
+AUTH0_API_AUDIENCE = os.getenv("AUTH0_AUDIENCE") or os.getenv("AUTH0_API_AUDIENCE")
+AUTH0_CLIENT_ID = os.getenv("AUTH0_CLIENT_ID")
+AUTH0_CLIENT_SECRET = os.getenv("AUTH0_CLIENT_SECRET")
 AUTH0_ISSUER = os.getenv("AUTH0_ISSUER") or (
     f"https://{AUTH0_DOMAIN}/" if AUTH0_DOMAIN else None
 )

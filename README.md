@@ -165,4 +165,6 @@ Planned next steps (not yet implemented):
 - MCP — how to manage tool servers
 - microservice split
 - Bedrock / Foundry model backends
+- .\.venv\Scripts\Activate.ps1
+- 10.0.0.156
 

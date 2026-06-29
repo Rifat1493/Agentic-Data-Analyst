@@ -27,17 +27,27 @@ continues from exactly where it paused.
 """
 from __future__ import annotations
 
+import asyncio
+import io
 import uuid
+from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import Depends, FastAPI
+import jwt as pyjwt
+import pandas as pd
+import requests
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from src import config
+from src.middleware.cache import enable_global_semantic_cache
 from src.workflows.analyst_workflow import build_analyst_workflow
+from src.workflows.long_term_memory import setup_long_term_table
+from src.workflows.short_term_memory import save_short_term, setup_short_term_table
 
 
 # --------------------------------------------------------------------------- #
@@ -64,6 +74,16 @@ def get_workflow():
 # --------------------------------------------------------------------------- #
 # Request / response schemas (these power the Swagger UI)                      #
 # --------------------------------------------------------------------------- #
+class LoginRequest(BaseModel):
+    username: str = Field(..., description="Auth0 user email.")
+    password: str = Field(..., description="Auth0 user password.")
+
+
+class LoginResponse(BaseModel):
+    access_token: str = Field(..., description="JWT to pass as `jwt` in /analyze.")
+    roles: list[str] = Field(..., description="Roles extracted from the token.")
+
+
 class AnalyzeRequest(BaseModel):
     prompt: str = Field(..., description="The analyst's natural-language request.",
                         examples=["Analyze AAPL over the last month and write a short report."])
@@ -98,12 +118,33 @@ class AnalyzeResponse(BaseModel):
 # --------------------------------------------------------------------------- #
 # App                                                                          #
 # --------------------------------------------------------------------------- #
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    import logging
+    log = logging.getLogger(__name__)
+
+    try:
+        enable_global_semantic_cache()
+        log.info("Semantic LLM cache enabled (Redis).")
+    except Exception as exc:
+        log.warning("Semantic cache skipped (Redis unavailable): %s", exc)
+
+    try:
+        await asyncio.to_thread(setup_short_term_table)
+        await asyncio.to_thread(setup_long_term_table)
+    except Exception as exc:
+        log.warning("Memory table setup skipped: %s", exc)
+
+    yield
+
+
 app = FastAPI(
     title="Agentic Data Analyst",
     description="A supervisor-orchestrated multi-agent stock-analysis API "
                 "(data collection → charting → reporting) with auth, rate "
                 "limiting, and human-in-the-loop approval.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 
@@ -139,6 +180,40 @@ def _to_response(thread_id: str, result: dict) -> AnalyzeResponse:
     )
 
 
+@app.post("/login", response_model=LoginResponse, tags=["auth"])
+async def login(req: LoginRequest) -> LoginResponse:
+    """Login with Auth0 username + password and receive a JWT with roles.
+
+    Pass the returned `access_token` as the `jwt` field in POST /analyze.
+    The workflow enforces AGENT_POLICY based on the roles in that token.
+    """
+    def _fetch() -> dict:
+        return requests.post(
+            f"https://{config.AUTH0_DOMAIN}/oauth/token",
+            json={
+                "grant_type":    "password",
+                "client_id":     config.AUTH0_CLIENT_ID,
+                "client_secret": config.AUTH0_CLIENT_SECRET,
+                "audience":      config.AUTH0_API_AUDIENCE,
+                "username":      req.username,
+                "password":      req.password,
+                "scope":         "openid profile email roles",
+            },
+            timeout=10,
+        ).json()
+
+    data = await asyncio.to_thread(_fetch)
+
+    if "access_token" not in data:
+        raise HTTPException(status_code=401, detail=data.get("error_description", "Login failed"))
+
+    token = data["access_token"]
+    claims = pyjwt.decode(token, options={"verify_signature": False})
+    roles = claims.get("permissions") or claims.get(config.AUTH0_ROLES_CLAIM) or []
+
+    return LoginResponse(access_token=token, roles=roles)
+
+
 @app.get("/health", tags=["ops"])
 async def health() -> dict:
     """Liveness/readiness probe (used by Docker/K8s and CI)."""
@@ -146,24 +221,55 @@ async def health() -> dict:
 
 
 @app.post("/analyze", response_model=AnalyzeResponse, tags=["analysis"])
-async def analyze(req: AnalyzeRequest, workflow=Depends(get_workflow)) -> AnalyzeResponse:
-    """Run the analyst workflow for a request.
+async def analyze(
+    prompt: str = Form(..., description="Natural-language analysis request."),
+    thread_id: Optional[str] = Form(None, description="Omit to start a new thread."),
+    user_id: Optional[str] = Form(None),
+    jwt: Optional[str] = Form(None, description="Auth0 access token from POST /login."),
+    require_approval: bool = Form(False),
+    file: Optional[UploadFile] = File(None, description="Optional CSV or Excel data file. "
+                                      "When provided the data_collector agent is skipped."),
+    workflow=Depends(get_workflow),
+) -> AnalyzeResponse:
+    """Run the analyst workflow.
 
-    Returns status="completed" with the produced artifacts, or
-    status="pending_approval" (with the pending `interrupt`) when human sign-off
-    is required before the report step.
+    Send as multipart/form-data. Attach a CSV or Excel file to supply your own
+    data — the workflow will use it directly instead of fetching from Yahoo Finance.
     """
-    thread_id = req.thread_id or str(uuid.uuid4())
-    config = {"configurable": {
-        "thread_id": thread_id,
-        "user_id": req.user_id,
-        "jwt": req.jwt,
-        "require_approval": req.require_approval,
+    tid = thread_id or str(uuid.uuid4())
+
+    collected_data = None
+    if file and file.filename:
+        content = await file.read()
+        name = file.filename.lower()
+        df = (pd.read_excel(io.BytesIO(content))
+              if name.endswith((".xlsx", ".xls"))
+              else pd.read_csv(io.BytesIO(content)))
+        collected_data = df.to_json(orient="records")
+
+    initial_state: dict = {"messages": [HumanMessage(prompt)]}
+    if collected_data:
+        initial_state["collected_data"] = collected_data
+
+    cfg = {"configurable": {
+        "thread_id": tid,
+        "user_id": user_id,
+        "jwt": jwt,
+        "require_approval": require_approval,
     }}
-    result = await workflow.ainvoke(
-        {"messages": [HumanMessage(req.prompt)]}, config
-    )
-    return _to_response(thread_id, result)
+    result = await workflow.ainvoke(initial_state, cfg)
+
+    # Persist conversation snapshot to short_term table (best-effort).
+    try:
+        msgs = [
+            {"role": getattr(m, "type", "unknown"), "content": getattr(m, "content", str(m))}
+            for m in (result.get("messages") or [])
+        ]
+        await asyncio.to_thread(save_short_term, tid, msgs)
+    except Exception:
+        pass
+
+    return _to_response(tid, result)
 
 
 @app.post("/analyze/{thread_id}/resume", response_model=AnalyzeResponse, tags=["analysis"])
@@ -175,3 +281,8 @@ async def resume(thread_id: str, req: ResumeRequest,
         Command(resume={"approved": req.approved, "reason": req.reason}), config
     )
     return _to_response(thread_id, result)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
