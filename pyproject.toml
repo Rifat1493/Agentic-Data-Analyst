@@ -24,6 +24,10 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "python-multipart>=0.0.32",
+    "dashscope>=1.26.0",
+    "langchain-google-genai>=4.2.6",
+    "langchain-huggingface>=1.2.2",
+    "sentence-transformers>=5.6.0",
 ]
 
 [dependency-groups]

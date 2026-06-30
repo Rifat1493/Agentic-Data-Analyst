@@ -13,7 +13,7 @@ import os
 from dotenv import load_dotenv
 
 # Load .env.dev once for the whole process. All env reads happen below.
-load_dotenv(".env.dev")
+load_dotenv(".env.dev", override=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -23,8 +23,8 @@ DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 DASHSCOPE_BASE_URL = os.getenv(
     "DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
-FOUNDATION_MODEL = os.getenv("FOUNDATION_MODEL", "qwen3.5-flash")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")
+FOUNDATION_MODEL = os.getenv("FOUNDATION_MODEL", "qwen3.5-plus")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
 
 
 # --------------------------------------------------------------------------- #
@@ -32,6 +32,7 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")
 # --------------------------------------------------------------------------- #
 POSTGRES_URL = os.getenv("POSTGRES_URL")
 REDIS_URL = os.getenv("REDIS_URL")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
 # --------------------------------------------------------------------------- #

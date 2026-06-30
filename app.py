@@ -44,7 +44,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from src import config
-from src.middleware.cache import enable_global_semantic_cache
+from src.middleware.cache import enable_global_cache
 from src.workflows.analyst_workflow import build_analyst_workflow
 from src.workflows.long_term_memory import setup_long_term_table
 from src.workflows.short_term_memory import save_short_term, setup_short_term_table
@@ -124,8 +124,8 @@ async def lifespan(_app: FastAPI):
     log = logging.getLogger(__name__)
 
     try:
-        enable_global_semantic_cache()
-        log.info("Semantic LLM cache enabled (Redis).")
+        mode = enable_global_cache()
+        log.info("LLM cache enabled in %s mode (Redis).", mode)
     except Exception as exc:
         log.warning("Semantic cache skipped (Redis unavailable): %s", exc)
 

@@ -168,3 +168,4 @@ Planned next steps (not yet implemented):
 - .\.venv\Scripts\Activate.ps1
 - 10.0.0.156
 
+uv run app:app --reload
