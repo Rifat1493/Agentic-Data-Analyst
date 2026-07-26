@@ -171,6 +171,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     scenario_full_pipeline()
-    scenario_user_supplies_data()
-    scenario_short_term_memory()
-    scenario_long_term_memory()
+    # scenario_user_supplies_data()
+    # scenario_short_term_memory()
+    # scenario_long_term_memory()

@@ -1,89 +1,113 @@
-"""Caching middleware — a semantic LLM cache (Redis-backed) to cut LLM calls.
+"""Caching middleware — Redis-backed semantic LLM cache.
 
-What this is (and is NOT)
--------------------------
-This is an APPLICATION RESPONSE CACHE, the only kind that reduces the *number*
-of LLM calls: we store the model's output keyed by the meaning of its input, and
-on a semantically-similar input we return the stored output WITHOUT calling the
-model. It is unrelated to the transformer's internal KV cache (intra-request) and
-to provider prompt caching (which only lowers per-call cost, not call count).
-
-How "semantic" works
---------------------
-Each prompt is embedded into a vector. On a new prompt we vector-search Redis for
-a previously cached prompt within `distance_threshold` (cosine distance: smaller =
-stricter). A hit returns the cached response. This catches paraphrases that an
-exact-match cache would miss ("AAPL last week" ~ "Apple, past 7 days").
-
-Requirements
-------------
-* Redis Stack (RediSearch/vector module) — plain Redis will NOT work.
-  Quick start:  docker run -d -p 6379:6379 redis/redis-stack:latest
-* An embeddings model (we use DashScope embeddings via the OpenAI-compatible API).
+Responses that contain tool_calls are never cached. Storing them would
+embed stale tool_call_ids that break LangGraph's routing on the next hit.
+Only pure text-generation responses (final summaries, routing decisions)
+are cached — which is where the real LLM savings are anyway.
 
 Environment (.env.dev)
 ----------------------
-    REDIS_URL                 e.g. redis://localhost:6379
-    EMBEDDING_MODEL           default 'text-embedding-v3'
-    DASHSCOPE_API_KEY         (already used by the chat model)
-    DASHSCOPE_BASE_URL        default DashScope compatible-mode endpoint
+    REDIS_URL                 e.g. redis://default:pass@host:port
     SEMANTIC_CACHE_DISTANCE   cosine-distance threshold, default 0.1 (strict)
     SEMANTIC_CACHE_TTL        seconds; default unset (no expiry)
-
-IMPORTANT — scoping / correctness
----------------------------------
-`enable_global_semantic_cache()` installs the cache for EVERY chat-model call,
-including the supervisor's routing and the agents' tool-calling. A semantic
-near-miss could therefore return a stale ROUTING decision or stale generated
-code. Mitigations: keep `distance_threshold` strict (small), set a TTL, or attach
-the cache to only a specific model instance via `ChatModel(cache=<cache>)` instead
-of globally. For time-sensitive financial answers, always set a short TTL.
 """
+import logging
+from typing import Sequence
+
 from langchain_core.globals import set_llm_cache
-from langchain_openai import OpenAIEmbeddings
+from langchain_core.outputs import ChatGeneration, Generation
+from langchain_core.messages import AIMessage
 from langchain_redis import RedisSemanticCache
+from langchain_huggingface import HuggingFaceEmbeddings
 
 from src import config
 
+log = logging.getLogger(__name__)
 
-def build_embeddings() -> OpenAIEmbeddings:
-    """DashScope embeddings via the OpenAI-compatible endpoint.
 
-    `check_embedding_ctx_length=False` disables OpenAI-specific tiktoken
-    chunking, which is required when talking to a non-OpenAI endpoint.
+def _has_tool_calls(return_val: Sequence[Generation]) -> bool:
+    """Return True if any generation contains tool_calls.
+
+    Checks both the normalized AIMessage.tool_calls attribute and
+    additional_kwargs['tool_calls'] because ChatQwen may populate either.
     """
-    return OpenAIEmbeddings(
-        model=config.EMBEDDING_MODEL,
-        base_url=config.DASHSCOPE_BASE_URL,
-        api_key=config.DASHSCOPE_API_KEY,
-        check_embedding_ctx_length=False,
+    for gen in return_val:
+        if isinstance(gen, ChatGeneration):
+            msg = gen.message
+            if isinstance(msg, AIMessage):
+                if msg.tool_calls:
+                    return True
+                if msg.additional_kwargs.get("tool_calls"):
+                    return True
+    return False
+
+
+class SafeSemanticCache(RedisSemanticCache):
+    """RedisSemanticCache that never stores or returns responses with tool_calls.
+
+    A cached AIMessage with tool_calls carries stale tool_call_ids from a
+    prior run. When LangGraph sees those IDs it thinks the tools already ran,
+    hits the fallback branch, and raises KeyError: 'model'.
+
+    Both write (update) and read (lookup) are guarded so old Redis entries
+    from before this fix are also ignored.
+    """
+
+    def lookup(self, prompt: str, llm_string: str):
+        result = super().lookup(prompt, llm_string)
+        if result and _has_tool_calls(result):
+            log.debug("Cache: ignoring hit — stored response contains tool_calls.")
+            return None
+        return result
+
+    async def alookup(self, prompt: str, llm_string: str):
+        result = await super().alookup(prompt, llm_string)
+        if result and _has_tool_calls(result):
+            log.debug("Cache: ignoring hit — stored response contains tool_calls.")
+            return None
+        return result
+
+    def update(self, prompt: str, llm_string: str, return_val: Sequence[Generation]) -> None:
+        if _has_tool_calls(return_val):
+            log.debug("Cache: skipping write — response contains tool_calls.")
+            return
+        super().update(prompt, llm_string, return_val)
+
+    async def aupdate(self, prompt: str, llm_string: str, return_val: Sequence[Generation]) -> None:
+        if _has_tool_calls(return_val):
+            log.debug("Cache: skipping write — response contains tool_calls.")
+            return
+        await super().aupdate(prompt, llm_string, return_val)
+
+
+def build_semantic_cache() -> SafeSemanticCache:
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-mpnet-base-v2",
+        encode_kwargs={"normalize_embeddings": True},
     )
-
-
-def build_semantic_cache(embeddings=None) -> RedisSemanticCache:
-    """Construct a Redis-backed semantic cache. Requires REDIS_URL."""
     if not config.REDIS_URL:
-        raise RuntimeError("REDIS_URL is not set (.env.dev). Semantic cache needs Redis Stack.")
-
-    return RedisSemanticCache(
-        embeddings=embeddings or build_embeddings(),
+        raise RuntimeError("REDIS_URL is not set.")
+    return SafeSemanticCache(
+        embeddings=embeddings,
         redis_url=config.REDIS_URL,
         distance_threshold=config.SEMANTIC_CACHE_DISTANCE,
         ttl=config.SEMANTIC_CACHE_TTL,
     )
 
 
-def enable_global_semantic_cache(embeddings=None) -> RedisSemanticCache:
-    """Install the semantic cache for ALL chat-model calls in the process.
+def enable_global_cache() -> str:
+    """Install the semantic Redis cache globally for all LLM calls.
 
-    Call this ONCE at startup, before building the workflow:
-
-        from src.middleware.cache import enable_global_semantic_cache
-        enable_global_semantic_cache()
-        app = build_analyst_workflow()
-
-    Returns the cache so you can `.clear()` it in tests/admin.
+    Raises if Redis is unavailable or embeddings fail.
+    Returns "semantic" on success.
     """
-    cache = build_semantic_cache(embeddings)
+    if not config.REDIS_URL:
+        raise RuntimeError("REDIS_URL is not set.")
+    cache = build_semantic_cache()
     set_llm_cache(cache)
-    return cache
+    log.info("Semantic LLM cache enabled (Redis + HuggingFace embeddings).")
+    return "semantic"
+
+
+# Alias only — do NOT call here; the actual activation happens in app.py lifespan.
+enable_global_semantic_cache = enable_global_cache

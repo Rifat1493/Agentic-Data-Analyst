@@ -13,7 +13,7 @@ import os
 from dotenv import load_dotenv
 
 # Load .env.dev once for the whole process. All env reads happen below.
-load_dotenv(".env.dev")
+load_dotenv(".env.dev", override=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -23,8 +23,8 @@ DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 DASHSCOPE_BASE_URL = os.getenv(
     "DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
-FOUNDATION_MODEL = os.getenv("FOUNDATION_MODEL", "qwen3.5-flash")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")
+FOUNDATION_MODEL = os.getenv("FOUNDATION_MODEL", "qwen3.5-plus")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
 
 
 # --------------------------------------------------------------------------- #
@@ -32,6 +32,7 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")
 # --------------------------------------------------------------------------- #
 POSTGRES_URL = os.getenv("POSTGRES_URL")
 REDIS_URL = os.getenv("REDIS_URL")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
 # --------------------------------------------------------------------------- #
@@ -40,7 +41,9 @@ REDIS_URL = os.getenv("REDIS_URL")
 DEFAULT_ROLES_CLAIM = "https://agentic-data-analyst/roles"
 
 AUTH0_DOMAIN = os.getenv("AUTH0_DOMAIN")
-AUTH0_API_AUDIENCE = os.getenv("AUTH0_API_AUDIENCE")
+AUTH0_API_AUDIENCE = os.getenv("AUTH0_AUDIENCE") or os.getenv("AUTH0_API_AUDIENCE")
+AUTH0_CLIENT_ID = os.getenv("AUTH0_CLIENT_ID")
+AUTH0_CLIENT_SECRET = os.getenv("AUTH0_CLIENT_SECRET")
 AUTH0_ISSUER = os.getenv("AUTH0_ISSUER") or (
     f"https://{AUTH0_DOMAIN}/" if AUTH0_DOMAIN else None
 )

@@ -31,6 +31,18 @@ Memory
 * Long-term memory   = a *store* (here `InMemoryStore`). It survives ACROSS
   conversations (threads) and users — e.g. user chart preferences or a watchlist.
   Swap for a Postgres-backed store later.
+
+Human-in-the-loop (HITL)
+------------------------
+Writing a report is the one externally visible artifact, so it is a natural
+approval point. When a run is started with
+`config={"configurable": {"require_approval": True, "thread_id": ...}}`, the
+`report_generator` node calls LangGraph's `interrupt()` BEFORE doing any work.
+That suspends the graph (the checkpointer persists the exact state) and returns
+control to the caller, who shows the pending decision to a human. The human's
+verdict is fed back with `Command(resume=<decision>)` and the graph continues
+from where it paused — approving runs the report, rejecting skips it. HITL
+therefore REQUIRES a checkpointer and a stable `thread_id`.
 """
 import operator
 from typing import Annotated, Literal, Optional
@@ -41,6 +53,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import interrupt
 
 from src.agents.models import get_foundation_model
 from src.agents.data_collector import build_data_collector_agent
@@ -338,13 +351,44 @@ def code_generator_node(state: AnalystState) -> dict:
     }
 
 
-def report_generator_node(state: AnalystState) -> dict:
+def _is_approved(decision) -> bool:
+    """Interpret a human HITL verdict (bool / str / dict) as approve-or-not."""
+    if isinstance(decision, bool):
+        return decision
+    if isinstance(decision, str):
+        return decision.strip().lower() in {"y", "yes", "ok", "approve", "approved", "true"}
+    if isinstance(decision, dict):
+        return bool(decision.get("approved", decision.get("approve", False)))
+    return bool(decision)
+
+
+def report_generator_node(state: AnalystState, config) -> dict:
     # report_generator is open to everyone, but we still call the guard so the
     # policy stays in ONE place (AGENT_POLICY) rather than hard-coded here.
     principal = Principal.from_dict(state.get("principal"))
     allowed, reason = check_access(principal, "report_generator")
     if not allowed:
         return _deny("report_generator", reason)
+
+    # HUMAN-IN-THE-LOOP: optionally pause for sign-off before the one externally
+    # visible artifact (the report) is written. Opt-in per run via config so the
+    # default behaviour — and every existing test — is unchanged.
+    if (config or {}).get("configurable", {}).get("require_approval"):
+        decision = interrupt({
+            "type": "report_approval",
+            "question": "Approve generating the financial report?",
+            "task": state.get("task", ""),
+            "has_data": bool(state.get("collected_data")),
+            "has_chart": bool(state.get("chart_path")),
+        })
+        if not _is_approved(decision):
+            note = ""
+            if isinstance(decision, dict) and decision.get("reason"):
+                note = f" Reason: {decision['reason']}"
+            return {"messages": [AIMessage(
+                content=f"[report_generator] Report generation was rejected by the "
+                        f"human reviewer.{note}"
+            )]}
 
     result = _report_generator.invoke(
         {"messages": [{"role": "user", "content": _build_worker_input(state)}]}

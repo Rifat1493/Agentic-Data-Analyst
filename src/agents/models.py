@@ -16,11 +16,8 @@ def get_foundation_model_v2():
 
 
 def get_foundation_model():
-    """Initialize and return the foundation model for the agent."""
-
     llm = ChatQwen(
         model=config.FOUNDATION_MODEL,
         api_key=config.DASHSCOPE_API_KEY,
-        # other params...
     )
     return llm
