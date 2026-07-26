@@ -29,9 +29,12 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 import jwt as pyjwt
 import pandas as pd
@@ -46,7 +49,7 @@ from pydantic import BaseModel, Field
 from src import config
 from src.middleware.cache import enable_global_cache
 from src.workflows.analyst_workflow import build_analyst_workflow
-from src.workflows.long_term_memory import setup_long_term_table
+from src.workflows.long_term_memory import setup_long_term_table, persist_session_signals
 from src.workflows.short_term_memory import save_short_term, setup_short_term_table
 
 
@@ -120,9 +123,6 @@ class AnalyzeResponse(BaseModel):
 # --------------------------------------------------------------------------- #
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    import logging
-    log = logging.getLogger(__name__)
-
     try:
         mode = enable_global_cache()
         log.info("LLM cache enabled in %s mode (Redis).", mode)
@@ -259,15 +259,21 @@ async def analyze(
     }}
     result = await workflow.ainvoke(initial_state, cfg)
 
-    # Persist conversation snapshot to short_term table (best-effort).
+    # Persist to short_term and long_term tables (best-effort).
+    msgs = [
+        {"role": getattr(m, "type", "unknown"), "content": getattr(m, "content", str(m))}
+        for m in (result.get("messages") or [])
+    ]
     try:
-        msgs = [
-            {"role": getattr(m, "type", "unknown"), "content": getattr(m, "content", str(m))}
-            for m in (result.get("messages") or [])
-        ]
         await asyncio.to_thread(save_short_term, tid, msgs)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("short_term write failed for thread %s: %s", tid, exc)
+
+    user_id = (result.get("principal") or {}).get("user_id") or "anonymous"
+    try:
+        await asyncio.to_thread(persist_session_signals, user_id, result, prompt)
+    except Exception as exc:
+        log.warning("long_term write failed for user %s: %s", user_id, exc)
 
     return _to_response(tid, result)
 

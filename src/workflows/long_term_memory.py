@@ -70,19 +70,85 @@ def setup_long_term_table() -> None:
         conn.commit()
 
 
+_UPSERT = """
+INSERT INTO long_term (user_id, key, value, updated_at)
+VALUES (%s, %s, %s, %s)
+ON CONFLICT (user_id, key) DO UPDATE
+    SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+"""
+
+
 def save_long_term(user_id: str, key: str, value: dict) -> None:
-    """Write (or update) a memory entry for a user."""
+    """Write (or update) a single memory entry for a user."""
     with _connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO long_term (user_id, key, value, updated_at)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (user_id, key) DO UPDATE
-                SET value      = EXCLUDED.value,
-                    updated_at = EXCLUDED.updated_at
-            """,
-            (user_id, key, json.dumps(value), datetime.now(timezone.utc)),
-        )
+        conn.execute(_UPSERT, (user_id, key, json.dumps(value), datetime.now(timezone.utc)))
+        conn.commit()
+
+
+def _load_key(conn: psycopg.Connection, user_id: str, key: str) -> dict | None:
+    """Read one key's value within an existing connection (no commit)."""
+    row = conn.execute(
+        "SELECT value FROM long_term WHERE user_id = %s AND key = %s",
+        (user_id, key),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def persist_session_signals(user_id: str, result: dict, prompt: str) -> None:
+    """Extract meaningful signals from a completed workflow run and accumulate them.
+
+    Stores three concepts per user — all keyed by concept name, not by session:
+
+      watched_tickers   list of tickers the user has asked about (most recent first,
+                        capped at 20). Moves a re-queried ticker to the front.
+
+      preferred_period  frequency map  {"1wk": 3, "1mo": 1} so the UI / supervisor
+                        can surface the user's usual lookback window.
+
+      preferred_interval same idea for data granularity {"1d": 5, "1h": 1}.
+
+    Nothing is stored if no data was collected (e.g. the run failed or the user
+    only asked a question that didn't trigger the data_collector agent).
+    """
+    collected_data_str = result.get("collected_data")
+    if not collected_data_str:
+        return
+
+    try:
+        data = json.loads(collected_data_str)
+    except (ValueError, TypeError):
+        return
+
+    ticker = data.get("ticker")
+    period = data.get("period")
+    interval = data.get("interval")
+
+    if not ticker:
+        return
+
+    now = datetime.now(timezone.utc)
+
+    with _connect() as conn:
+        # 1. watched_tickers — deduplicated, most-recent-first, max 20
+        tickers_val = _load_key(conn, user_id, "watched_tickers") or {"tickers": []}
+        tickers: list = tickers_val.get("tickers", [])
+        if ticker in tickers:
+            tickers.remove(ticker)
+        tickers.insert(0, ticker)
+        conn.execute(_UPSERT, (user_id, "watched_tickers", json.dumps({"tickers": tickers[:20]}), now))
+
+        # 2. preferred_period — frequency map
+        if period:
+            period_map = _load_key(conn, user_id, "preferred_period") or {}
+            period_map[period] = period_map.get(period, 0) + 1
+            conn.execute(_UPSERT, (user_id, "preferred_period", json.dumps(period_map), now))
+
+        # 3. preferred_interval — frequency map
+        if interval:
+            interval_map = _load_key(conn, user_id, "preferred_interval") or {}
+            interval_map[interval] = interval_map.get(interval, 0) + 1
+            conn.execute(_UPSERT, (user_id, "preferred_interval", json.dumps(interval_map), now))
+
         conn.commit()
 
 
